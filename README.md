@@ -44,8 +44,8 @@ That sub-build may configure/build the bundled Newlib source on the host. It pro
 - **Ctrl+Alt+R** requests an immediate PC reset by writing `0xFE` to the keyboard controller command port. The source comment says Ctrl+Alt+Delete, but the implemented key check is **R**, not Delete. This is a hardware reset request, not a clean shutdown; buffered data is lost.
 - On the fatal-error screen, press **R** by itself to request the same reset.
 - On the fatal-error screen, press **Tab** to turn off the PC speaker.
-- **F1** attempts to print `hello!`; the kernel printf path only writes for a task with a TTY, and the keyboard worker is not assigned one, so this may produce no visible output.
-- **Right Alt+1** raises the PIT's recorded frequency by 5 Hz. **Right Alt+2** lowers it by 5 Hz. This is a debug control, not a calibrated clock setting; the initial rate is 2 Hz, so lowering it immediately underflows an unsigned value.
+- **F1** attempts prints "hello!" to the serial console
+- **Right Alt+1** raises the PIT's recorded frequency by 5 Hz. **Right Alt+2** lowers it by 5 Hz. This is a debug control, not a calibrated clock setting; the initial rate is 105 Hz. If it is lowered when at 0 the kernel panics. **Right Alt+0** stops the hardware timer. **Right Alt+r** resets it to the default (105hz).
 - The PS/2 keyboard path recognizes a small Set-1-style key map. Character input is line-buffered by the TTY, echoed, and sent to the active terminal. There is no terminal-switching shortcut wired up.
 
 ### The Shell
