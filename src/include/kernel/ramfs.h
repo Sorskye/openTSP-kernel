@@ -1,8 +1,10 @@
 #ifndef RAMFS_H
 #define RAMFS_H
+#include "types.h"
 
-#include "fs.h"
 
-struct inode* ramfs_create_root(void* image_start, size_t image_size);
 
+
+struct inode* set_tmpfs_from_fsimg(void* image_start, size_t image_size);
+struct inode* tmpfs_create_empty_root();
 #endif

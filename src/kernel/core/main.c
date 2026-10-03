@@ -3,17 +3,18 @@
 #include "main.h"
 #include "types.h"
 #include "stdio.h"
-#include "kerror.h"
+#include "debug.h"
 #include "GDT.h"
 #include "IDT.h"
 #include "io.h"
-#include "memory.h"
+#include "pmm.h"
+#include "vmm.h"
 #include "string.h"
 #include "ps2_key.h"
 #include "sleep.h"
 #include "serial.h"
 #include "pci.h"
-#include "fs.h"
+#include "ufs.h"
 #include "vfs.h"
 #include "ramfs.h"
 
@@ -22,290 +23,170 @@
 #include "compositor.h"
 #include "lpcspeak.h"
 #include "ps2_mouse.h"
+#include "spinlock.h"
+#include "framebuffer.h"
+#include "video.h"
+#include "psf.h"
+#include "bitmap.h"
+#include "syscall.h"
 
 #define KERNEL_VER_REL 0
 #define KERNEL_VER_MAJ 1
-#define KERNEL_VER_MIN 3
-#define KERNEL_VER_CODENAME "POLESTAR"
+#define KERNEL_VER_MIN 4
+#define KERNEL_VER_CODENAME "HEXA"
 // drivers
 #include "vga-textmode.h"
 #include "pit.h"
 
 struct inode* root_inode;
 
+uint32_t MBmagic = 0;
+struct multiboot_info* MBinfo;
+
 // temp
 void no_sse(){
-    vga_refresh();
-    printf("FOUT: SSE is niet beschikbaar..\n");
-    printf("zonder SSE kan deze versie van TBS-86 niet opstarten.");
-    vga_refresh();
     return;
 }
 
-void kernel_main(uint32_t magic, struct multiboot_info* mbinfo) {
-    if (magic != 0x1BADB002){
-       // halt();
+void kernel_bootstrap(uint32_t magic, struct multiboot_info* mbinfo){
+    __asm__ __volatile("cli");
+
+    serial_print("bootstrap procedure\n");
+    serial_print("multiboot magic: 0x%x\n", magic);
+
+    if (magic != 0x2BADB002){
+        KeBugCheck(0, "MULTIBOOT_MAGIC_INVALID" ,0);
     }
 
-    parse_memory_map(mbinfo);
+    MBmagic = magic;
+    MBinfo = mbinfo;
+
 
     const char* cmdline = (const char*) mbinfo->cmdline;
-
     if (cmdline) {
-    // Example parsing
+        serial_print("bootloader commands: '%s'.\n", cmdline);
     }
 
+    // hardware timer frequency
+    pit_init(2);
+
+    pmm_init(mbinfo);
+    serial_print("pmm initialized\n");
+    vmm_init(mbinfo);
+
+    // vmm switches to higher half (kernel_main)
+
+}
+
+
+void kernel_main() {
+    asm __volatile__("cli");
+
     
-    serial_print("vga init\n");
-
-    // TODO: check multiboot checksum in parse_memory_map()
-
-    GDT_install();
-    IDT_install();
-
-    pit_init(200);
-    
-    
-    // setup tty
-    
-    tty_init();
-    serial_print("init tty\n");
-    tty_t* tty0 = create_tty();
-    tty_t* tty1 = create_tty();
-    tty_t* tty2 = create_tty();
-    active_tty = tty0;
 
 
-    // setup ramfs
+    serial_print("executing in higher half\n");
 
-    multiboot_module_t* mods = (multiboot_module_t*) mbinfo->mods_addr;
 
-    if (mbinfo->mods_count > 0) {
-        uint32_t mod_start_phys = mods[0].mod_start;
-        uint32_t mod_end_phys   = mods[0].mod_end;
+    root_inode = tmpfs_create_empty_root();
+
+    framebuffer_init(MBinfo);
+
+    serial_print("MBinfo at: 0x%x\n", MBinfo);
+
+    multiboot_module_t* mods = (multiboot_module_t*) MBinfo->mods_addr;
+    if (MBinfo->mods_count > 0) { // original : 0
+        uint32_t mod_start = mods[0].mod_start;
+        uint32_t mod_end   = mods[0].mod_end;
 
         serial_print("=== MODULE DIAGNOSTIC ===\n");
-        serial_print("mod_start_phys = 0x%x, mod_end_phys = 0x%x\n", mod_start_phys, mod_end_phys);
-        serial_print("Module size: %u bytes\n", mod_end_phys - mod_start_phys);
+        serial_print("mod_start = 0x%x, mod_end = 0x%x\n", mod_start, mod_end);
+        serial_print("Module size: %u bytes\n", mod_end - mod_start);
         
-        // Check which PDE/PTE entries the module uses
-        uint32_t start_pde = (mod_start_phys >> 22) & 0x3FF;
-        uint32_t end_pde   = ((mod_end_phys - 1) >> 22) & 0x3FF;
-        serial_print("Module uses PDE[%u] to PDE[%u] (page dirs)\n", start_pde, end_pde);
         
-        extern uint32_t page_directory[];
-        for (uint32_t pde_idx = start_pde; pde_idx <= end_pde && pde_idx < 256; pde_idx++) {
-            uint32_t pde = page_directory[pde_idx];
-            serial_print("  PDE[%u] = 0x%x %s\n", pde_idx, pde, 
-                         (pde & 1) ? "(present)" : "(NOT PRESENT!)");
-        }
-        
-        // Debug the page table entries for specific module pages
-        debug_module_pte(mod_start_phys, mbinfo);
-        debug_module_pte(mod_start_phys + 0x1000, mbinfo);  // second page
-        debug_module_pte(mod_start_phys + 0x2000, mbinfo);  // third page
+        if (strcmp((char*)mods[0].string, "tmpfs") == 0){
+            serial_print("module: ramfs_module\n");
+            
+             
+            // Debug the page table entries for specific module pages
 
-        void* fs_start = (void*)mod_start_phys;
-        size_t fs_size = mod_end_phys - mod_start_phys;
+            void* fs_start = (void*)mod_start;
+            uint32_t fs_size = mod_end - mod_start;
 
-        serial_print("fs_start = %p, fs_size = %d\n", fs_start, fs_size);
+            serial_print("fs_start = 0x%x, fs_size = %d\n", fs_start, fs_size);
 
-        // Verify page tables are intact before reading module
-        verify_page_table_integrity();
+            root_inode = set_tmpfs_from_fsimg(fs_start, fs_size);
+        } 
 
-        // Debug: print first 64 bytes
-        uint8_t* debug_bytes = (uint8_t*)fs_start;
-        serial_print("First 64 bytes of module: ");
-        for (int i = 0; i < 64; i++) {
-            serial_print("%02x ", debug_bytes[i]);
-        }
-        serial_print("\n");
-
-        root_inode = ramfs_create_root(fs_start, fs_size);
-    } else {
-        root_inode = ramfs_create_root(NULL, 0);
     }
-
+    
+    // setup vfs
     vfs_init(root_inode);
-    vga_init();
+    init_debug("/sys/fonts/default8x16.psf");
+
+    // syscall handlers
+    regDefSyscallHandlers();
+
+    serial_print("initializing scheduler\n");
     init_scheduler();
+    
+
+    serial_print("enumerating PCI\n");
+    pci_enumerate();
+  
+
+    serial_print("=== init tty & input ===\n");
+    // input devices and sink's
+          tty_init();
+        // setup tty
+        tty_t* tty0 = create_tty();
+        set_active_tty(tty0);
+      
+        tty_t* active_tty = get_active_tty();
+
+        set_active_sink(&active_tty->input_sink);
+
+    init_serial();
+   
+    // should be inside driver
+    // drivers should register themselves to the input sink
+    // kernel should review drivers and register them to the input sink
+    ps2keyboard_init();
+    mouse_init();
 
     // scheduler tasks
+   
 
-    void console_task(){
-        char input[64];
-        char *argv[8];
-        int argc;
-
-        printf("TBS-86 Version: %d.%d.%d codename: %s\n",KERNEL_VER_REL, KERNEL_VER_MAJ, KERNEL_VER_MIN, KERNEL_VER_CODENAME);
-        speaker_sound_ok();
-        printf("\n");
-        
-        while(1){
-            
-            char cwd[256];
-            memset(cwd, 0, 256);
-            build_path(current_process->cwd, cwd);
-           
-            printf("%s $ ",cwd);
-
-            
-            tty_read_line(active_tty, input, 256);
-            for (int i = 0; input[i]; i++) {
-                if (input[i] == '\n' || input[i] == '\r') {
-                    input[i] = '\0';
-                    break;
-                }
-            }
-
-            argc = 0;
-            char *p = input;
-
-            // Parse arguments
-            while (*p) {
-
-                while (*p == ' ')
-                    p++;
-
-                if (*p == '\0')
-                    break;
-
-                argv[argc++] = p;
-
-                if (argc >= 64)
-                    break;
-
-                while (*p && *p != ' ')
-                    p++;
-
-                if (*p) {
-                    *p = '\0';
-                    p++;
-                }
-            }
-
-            if(argc == 0){
-                continue;
-            }
+    serial_print("starting critical tasks..\n");
+    
 
 
-            if(strcmp(argv[0], "ls") == 0){
-                
-                int fd = sys_open(cwd, 0);
-                dirent_t ent;
+    task_t* mcomp_task = create_ktask(compositor_main,NULL);
 
-                while (sys_readdir(fd, &ent) == 0) {
-                    if(strcmp(ent.name, ".") == 0 || strcmp(ent.name, "..") == 0)
-                        continue;
-                    printf(" %c%s",'-',ent.name);
-                    printf("\n");
-                }
-                sys_close(fd);
-                continue;
-
-            }
-
-            if(!argv[0]){
-                continue;
-            }
-
-            if(strcmp(argv[0], "cd") == 0){
-                int ret = sys_chdir(argv[1]);
-                serial_print("Ret: %d",ret);
-                continue;
-            }
-
-            if(strcmp(argv[0], "mkdir") == 0){
-                sys_mkdir(argv[1]);
-                continue;
-            }
-
-
-            if(strcmp(argv[0], "touch") == 0){
-                sys_create(argv[1]);
-                continue;
-            }
-
-            if(strcmp(argv[0], "clear") == 0){
-                compositor_clear_screen();
-                continue;
-            }
-
-            if(strcmp(argv[0], "cat") == 0){
-                int fd = sys_open(argv[1],0);
-                int size;
-                if(atoi(argv[2]) != 0){
-                    size = atoi(argv[2]);
-                }else{
-                    size = 512;
-                }
-               
-                char buff[size];
-                sys_read(fd,buff,size);
-                printf("%s\n",buff);
-                sys_close(fd);
-                continue;
-            }
-
-            if(strcmp(argv[0], "wf") == 0){
-                int fd = sys_open(argv[1],0);
-                int size = strlen(argv[2]);
-                serial_print("size: %d",size);
-                sys_write(fd,argv[2], size);
-                sys_close(fd);
-                continue;
-            }
-
-            if(strcmp(argv[0], "lspci") == 0){
-                pci_enumerate();
-                continue;
-            }
-
-            if(strcmp(argv[0], "reboot") == 0){
-                outb(0x64, 0xFE);
-                continue;
-            }
-
-            if(strcmp(argv[0], "panic") == 0){
-                panic("Manual panic triggered", NULL);
-                continue;
-            }
-
-            if(strcmp(argv[0], "cursor") == 0){
-                printf("scanning for ps/2 mouse..\n");
-                mouse_init();
-                task_t* cursor_task = create_ktask((void*)CompositorEnableMouse, 0);
-                continue;
-            }
-
-            SpeakerBlip();
-            printf("?\n");
-        }
-        
+    process_t* test_proc = create_process_from_elf("program.elf", "/bin/bash.elf", "/");
+    
+    if(test_proc == NULL){
+       KeBugCheck(0,"no proc",0);
     }
+    serial_print("test_proc pid: %d\n", test_proc->pid);
 
     
     
-    process_t* console_app = create_process("cons", (void*)console_task);
-    serial_print("console app %d\n", console_app->main_task->tid);
-    serial_print("create task made\n");
-    task_t* compositor_task = create_ktask((void*)compositor_main, 0);
+   // task_t* compositor_app = create_ktask((void*)compositor_main, NULL); 
+   // active_tty->task_read_wait = console_app->main_task;
+   // active_tty->task_backend_wait = compositor_app;
     
-    
-    active_tty->task_read_wait = console_app->main_task;
-    active_tty->task_backend_wait = compositor_task;
-    tty1->task_backend_wait = compositor_task;
-    console_app->main_task->tty = active_tty;
+    test_proc->main_task->tty = active_tty;
+   
+   
+    serial_print("start scheduling\n");
 
-    serial_print("start mtd\n");
-    start_multitasking();
+    start_scheduling();
 
 
     while (true)
     {
-        halt();
+        KeHalt();
     }
     
 }
-
- 

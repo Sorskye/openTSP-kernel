@@ -4,6 +4,8 @@
 #include "io.h"
 #include"sleep.h"
 #include "pci.h"
+#include "serial.h"
+#include "vmm.h"
 
 static const pci_class_info_t pci_classes[] = {
     {0x00, 0x00, "Unclassified: Non-VGA device"},
@@ -86,6 +88,7 @@ static const pci_class_info_t pci_classes[] = {
 
 const char* pci_class_description(uint8_t class_code, uint8_t subclass)
 {
+   
     for (size_t i = 0; i < sizeof(pci_classes)/sizeof(pci_classes[0]); i++) {
         if (pci_classes[i].class_code == class_code &&
             pci_classes[i].subclass == subclass)
@@ -112,16 +115,79 @@ uint32_t pci_config_read(uint8_t bus, uint8_t device, uint8_t func, uint8_t offs
     return inl(0xCFC);
 }
 
-// Enumerate all PCI devices and print Vendor ID and Device ID
+void pci_config_write(uint8_t bus, uint8_t device, uint8_t func, uint8_t offset, uint32_t value){
+    outl(0xCF8, pci_config_address(bus, device, func, offset));
+    outl(0xCFC, value);
+}
+
+
+void pci_read_bar(uint8_t bus, uint8_t device, uint8_t func, uint8_t bar_index, pci_bar_t *bar){
+    uint8_t offset = 0x10 + (bar_index * 4);
+    uint32_t original = pci_config_read(bus, device, func, offset);
+
+    if(original == 0){
+        bar->type = PCI_BAR_UNUSED;
+        return;
+    }
+
+    pci_config_write(bus, device, func, offset, 0xFFFFFFFF);
+    uint32_t size_mask = pci_config_read(bus, device, func, offset);
+    pci_config_write(bus, device, func, offset, original);
+
+    if (original & 1){
+        // I/O bar
+        bar->type = PCI_BAR_IO;
+
+        bar->address = original & ~0x3;
+        bar->size = ~(size_mask & ~0x3) + 1;
+        bar->prefetchable = false;
+
+    }
+    else{
+        uint8_t mem_type = (original >> 1) & 0x3;
+
+        if (mem_type == 2){
+            // 64 bit bar
+            uint32_t original_hi =
+                pci_config_read(bus, device, func, offset + 4);
+
+            pci_config_write(bus, device, func, offset + 4, 0xFFFFFFFF);
+            uint32_t size_hi =
+                pci_config_read(bus, device, func, offset + 4);
+            pci_config_write(bus, device, func, offset + 4, original_hi);
+
+            uint64_t addr =
+                ((uint64_t)original_hi << 32) |
+                (original & ~0xF);
+
+            uint64_t mask =
+                ((uint64_t)size_hi << 32) |
+                (size_mask & ~0xFULL);
+
+            bar->type = PCI_BAR_MMIO64;
+            bar->address = addr;
+            bar->size = ~mask + 1;
+        }
+        else{
+            bar->type = PCI_BAR_MMIO32;
+            bar->address = original & ~0xF;
+            bar->size = ~(size_mask & ~0xF) + 1;
+        }
+
+        bar->prefetchable = (original & 8) != 0;
+    }
+}
+
+// enumerate PCI devices and map structs to memory
 void pci_enumerate(void)
 {
+    serial_print("enumerating pci devices\n");
     int countdev = 0;
 
     for (uint16_t bus = 0; bus < 256; bus++) {
         
         for (uint8_t device = 0; device < 32; device++) {
 
-    
             uint32_t data = pci_config_read(bus, device, 0, 0x00);
             uint16_t vendor = data & 0xFFFF;
 
@@ -149,15 +215,44 @@ void pci_enumerate(void)
                     continue; 
 
                 uint16_t device_id = (data2 >> 16) & 0xFFFF;
-                printf("PCI Device: %04x:%04x at %02x:%02x.%u | %s\n",
-                       vendor2, device_id, bus, device, func, pci_class_description(class_code,subclass));
 
+                pci_device_t *dev = kzalloc(sizeof(pci_device_t));
+                // create device
+                
+                dev->bus = bus;
+                dev->device = device;
+                dev->function = func;
+                dev->vendor_id = vendor2;
+                dev->device_id = device_id;
+                dev->class_code = class_code;
+                dev->subclass = subclass;
+                dev->prog_if = prog_if;
+                serial_print("PCI Device: %x:%x at %x:%x.%u\n", vendor2, device_id, bus, device, func);
+
+                for (int i=0; i < 6; i++){
+                    pci_read_bar(bus, device, func, i, &dev->bars[i]);
+
+                    if (dev->bars[i].type != PCI_BAR_UNUSED){
+                        serial_print("BAR%d: addr=%x size=%x type=%d\n",
+                            i,
+                            dev->bars[i].address,
+                            dev->bars[i].size,
+                            dev->bars[i].type
+                        );
+
+                        if (dev->bars[i].type == PCI_BAR_MMIO64){
+                            i++;
+                        }
+                    }
+                }
+
+                // map device (struct) to memory
+              
                 countdev++;
             }
-            sleep_ms(100);
         }
     }
 
-    printf("%d PCI devices found\n", countdev);
+    serial_print("%d PCI devices found\n", countdev);
     return;
 }

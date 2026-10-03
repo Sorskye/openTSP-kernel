@@ -1,5 +1,127 @@
 #include "string.h"
 #include "types.h"
+#include "serial.h"
+
+void *memset(void *dst, int c, size_t n)
+{
+    uint8_t *d = (uint8_t *)dst;
+    uint8_t v = (uint8_t)c;
+
+    // Byte-wise until aligned or done
+    while (n && ((uintptr_t)d & 3)) {
+        *d++ = v;
+        --n;
+    }
+
+    // 32-bit fill
+    if (n >= 4) {
+        uint32_t v32 = (uint32_t)v;
+        v32 |= v32 << 8;
+        v32 |= v32 << 16;
+
+        uint32_t *d32 = (uint32_t *)d;
+        while (n >= 4) {
+            *d32++ = v32;
+            n -= 4;
+        }
+        d = (uint8_t *)d32;
+    }
+
+    // Tail bytes
+    while (n--) {
+        *d++ = v;
+    }
+
+    return dst;
+}
+
+void *memcpy(void *dst, const void *src, size_t n)
+{
+    uint8_t *d = (uint8_t *)dst;
+    const uint8_t *s = (const uint8_t *)src;
+
+    // memcpy assumes no overlap
+
+    // Align destination (and source must match alignment to use word copy)
+    while (n && (((uintptr_t)d & 3) || ((uintptr_t)s & 3))) {
+        *d++ = *s++;
+        --n;
+    }
+
+    // 32-bit copy
+    if (n >= 4) {
+        uint32_t *d32 = (uint32_t *)d;
+        const uint32_t *s32 = (const uint32_t *)s;
+
+        while (n >= 4) {
+            *d32++ = *s32++;
+            n -= 4;
+        }
+
+        d = (uint8_t *)d32;
+        s = (const uint8_t *)s32;
+    }
+
+    // Tail bytes
+    while (n--) {
+        *d++ = *s++;
+    }
+
+    return dst;
+}
+
+void *memmove(void *dst, const void *src, size_t n)
+{
+    uint8_t *d = (uint8_t *)dst;
+    const uint8_t *s = (const uint8_t *)src;
+
+    if (d == s || n == 0) {
+        return dst;
+    }
+
+    if (d < s) {
+        // Forward copy (like memcpy)
+        return memcpy(dst, src, n);
+    } else {
+        // Backward copy to handle overlap safely
+        d += n;
+        s += n;
+
+        // Byte-wise until aligned
+        while (n && (((uintptr_t)d & 3) || ((uintptr_t)s & 3))) {
+            --d;
+            --s;
+            *d = *s;
+            --n;
+        }
+
+        // 32-bit backward copy
+        if (n >= 4) {
+            uint32_t *d32 = (uint32_t *)d;
+            const uint32_t *s32 = (const uint32_t *)s;
+
+            while (n >= 4) {
+                --d32;
+                --s32;
+                *d32 = *s32;
+                n -= 4;
+            }
+
+            d = (uint8_t *)d32;
+            s = (const uint8_t *)s32;
+        }
+
+        // Tail bytes backward
+        while (n--) {
+            --d;
+            --s;
+            *d = *s;
+        }
+
+        return dst;
+    }
+}
+
 
 size_t strlen(char *str) {
     size_t length = 0;
@@ -18,6 +140,14 @@ void strcpy(char *dest, const char *src) {
         dest[i] = src[i];
     }
     dest[i] = '\0';  
+}
+
+void strcpyr(char *dest, const char *src) {
+
+    size_t i;
+    for (i = 0; src[i] != '\0'; i++) {
+        dest[i] = src[i];
+    }
 }
 
 char* strncpy(char* dest, const char* src, size_t n) {
@@ -124,12 +254,94 @@ int int_to_str(int value, char* out) {
     return j;
 }
 
+long strtol(const char *nptr, char **endptr, int base)
+{
+    const char *s = nptr;
+    int neg = 0;
 
-// Bare-metal string to integer conversion
-int atoi(const char *str) {
-    int result = 0;
-    int sign = 1;
+    /* skip leading whitespace */
+    while (*s == ' ' || *s == '\t' || *s == '\n' ||
+           *s == '\v' || *s == '\f' || *s == '\r') {
+        s++;
+    }
+
+    /* optional sign */
+    if (*s == '+') {
+        s++;
+    } else if (*s == '-') {
+        neg = 1;
+        s++;
+    }
+
+    /* base detection: "0x"/"0X" -> 16, leading "0" -> 8, else 10 */
+    if ((base == 0 || base == 16) && s[0] == '0' && (s[1] == 'x' || s[1] == 'X')) {
+        s += 2;
+        base = 16;
+    } else if (base == 0) {
+        base = (s[0] == '0') ? 8 : 10;
+    }
+
+    if (base < 2 || base > 36) {
+        if (endptr) *endptr = (char *)nptr;
+        return 0;
+    }
+
+    /* magnitude bound: LONG_MAX+1 == |LONG_MIN| on two's complement */
+    unsigned long cutoff = neg ? (unsigned long)LONG_MAX + 1UL
+                                : (unsigned long)LONG_MAX;
+    unsigned long cutlim = cutoff % (unsigned long)base;
+    cutoff /= (unsigned long)base;
+
+    unsigned long acc = 0;
+    int any = 0;
+    int overflow = 0;
+
+    for (;; s++) {
+        char c = *s;
+        int digit;
+
+        if (c >= '0' && c <= '9') {
+            digit = c - '0';
+        } else if (c >= 'a' && c <= 'z') {
+            digit = c - 'a' + 10;
+        } else if (c >= 'A' && c <= 'Z') {
+            digit = c - 'A' + 10;
+        } else {
+            break;
+        }
+
+        if (digit >= base) {
+            break;
+        }
+
+        any = 1;
+
+        if (acc > cutoff || (acc == cutoff && (unsigned long)digit > cutlim)) {
+            overflow = 1;
+        } else {
+            acc = acc * (unsigned long)base + (unsigned long)digit;
+        }
+    }
+
+    long result;
+    if (overflow) {
+        result = neg ? LONG_MIN : LONG_MAX;
+    } else {
+        result = neg ? -(long)acc : (long)acc;
+    }
+
+    if (endptr) {
+        *endptr = any ? (char *)s : (char *)nptr;
+    }
+
+    return result;
+}
+
+int atoi(const char *str)
+{
     int i = 0;
+    int sign = 1;
+    int result = 0;
 
     while (str[i] == ' ') {
         i++;
@@ -143,15 +355,22 @@ int atoi(const char *str) {
     }
 
     while (str[i] >= '0' && str[i] <= '9') {
-        if (result > ((0x7FFFFFFF - (str[i] - '0')) / 10)) {
-            return (sign == 1) ? 0x7FFFFFFF : 0x80000000;
+        int digit = str[i] - '0';
+
+        if (result < (INT_MIN + digit) / 10) {
+            return sign == 1 ? INT_MAX : INT_MIN;
         }
 
-        result = result * 10 + (str[i] - '0');
+        result = result * 10 - digit;
         i++;
     }
 
-    return sign * result;
+    if (sign == 1 && result == INT_MIN) {
+        return INT_MAX;   // handles the exact INT_MAX+1 boundary
+    }
+
+    return sign == 1 ? -result : result;
+    
 }
 
 int uint_to_str(unsigned int value, char* out) {

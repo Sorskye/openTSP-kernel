@@ -4,13 +4,27 @@ global loadIDT
 
 extern Exception_Handler
 extern IRQ_common_Handler 
+extern syscall_handler
 extern in_interrupt
 extern scheduler_tick
 extern send_eoi
 extern current_task
 extern scheduler_pick_next
+extern inSyscall
 
 extern task_t
+
+
+global irq_timer_stub
+global task_trampoline
+global user_task_trampoline
+
+extern current_task
+extern scheduler_tick
+extern IRQ_common_Handler
+extern in_interrupt
+extern serial_mark
+extern task_exit
 
 
 loadIDT:
@@ -26,21 +40,13 @@ isr_handler_stub:
     push fs
     push gs
 
+    pusha
+
     mov ax, 0x10
     mov ds, ax
     mov es, ax
     mov fs, ax
     mov gs, ax
-
-
-    push edi
-    push esi 
-    push ebp 
-    push esp
-    push ebx 
-    push edx
-    push ecx
-    push eax
 
     mov eax, esp
     push eax
@@ -61,30 +67,68 @@ isr_handler_stub:
     iret
 
 
+user_task_trampoline:
+    call ebx          ; ebx == entry, delivered via the fake pusha frame
+    mov eax, 60     ; 60 = SYSEXIT
+    int 0x80          
+.hang:
+    jmp .hang          ; should never be reached
 
+task_trampoline:
+    ;;ebx = entry point — loaded here by the fake register
+    ; push eax: could be arguments
+    call ebx
+    ;add esp, 4
+    int 0x81          ; traps into task_exit_stub, never returns
+
+task_exit_stub:
+    cli
+    inc dword [in_interrupt]
+    pusha                      ; saved but irrelevant, task is dying
+
+    mov eax, [current_task]
+    mov [eax], esp             ; harmless — this task's esp is never restored again
+    push eax
+    call task_exit           ; C: mark DEAD, unlink from ready queue, queue for reaping
+    add esp, 4
+    call scheduler_tick        ; must pick a *different* task now
+    jmp common_schedule_return
+
+common_schedule_return:
+    mov eax, [current_task]
+    test eax, eax
+    jz .load_next_task
+    mov esp, [eax]
+.load_next_task:
+    popa
+    test dword [esp+4], 3
+    jz .kernel_return
+    push eax
+    mov ax, 0x23
+    mov ds, ax
+    mov es, ax
+    mov fs, ax
+    mov gs, ax
+    pop eax
+.kernel_return:
+    dec dword [in_interrupt]
+    iret
 
 irq_timer_stub:
     cli
     inc dword [in_interrupt]
-
     pusha
 
     mov eax, [current_task]
+    test eax, eax
+    jz .schedule_next
     mov [eax], esp
-
+.schedule_next:
+    push 0
+    call send_eoi
+    add esp, 4
     call scheduler_tick
-    call IRQ_common_Handler
-
-    mov eax, [current_task]
-    mov esp, [eax]
-
-    popa
-    
-    dec dword [in_interrupt]
-    
-    sti
-    iret
-
+    jmp common_schedule_return
 
 irq_common_stub:
     cli
@@ -95,13 +139,13 @@ irq_common_stub:
     push fs
     push gs
 
+    pusha
+
     mov ax, 0x10
     mov ds, ax
     mov es, ax
     mov fs, ax
     mov gs, ax
-
-    pusha 
 
     mov eax, esp
     push eax
@@ -122,6 +166,41 @@ irq_common_stub:
     dec dword [in_interrupt]
 
     iret
+
+syscall_common_stub:
+    
+    pusha
+    push ds
+    push es
+    push fs
+    push gs
+
+    mov ax, 0x10
+    mov ds, ax
+    mov es, ax
+    mov fs, ax
+    mov gs, ax
+
+    push esp
+
+    call syscall_handler
+    add esp, 4
+
+    ; return value in eax
+    ; syscall_handler returns uint32_t in eax automatically by ABI
+
+    pop gs
+    pop fs
+    pop es
+    pop ds
+
+    popa
+
+    add esp, 8
+    iret
+
+    ;end
+
 
 
 
@@ -157,6 +236,11 @@ global isr28
 global isr29
 global isr30
 global isr31
+
+;syscall
+global isr128
+; thread exit call
+global isr129
 
 global irq0
 global irq1
@@ -361,6 +445,18 @@ isr31:
     push 0
     push 31
     jmp isr_handler_stub
+
+; syscall
+isr128:
+    push 0
+    push 128
+    jmp syscall_common_stub
+
+    ; thread exit
+isr129:
+    push 0
+    push 129
+    jmp task_exit_stub
 
 ; IRQ handlers
 irq0:

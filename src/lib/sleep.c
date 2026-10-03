@@ -1,10 +1,11 @@
 #include "pit.h"
 #include "task.h"
-#include "kerror.h"
+
 
 extern void scheduler_switch_now(void);
 
 static inline uint32_t ms_to_ticks(uint32_t ms) {
+    uint32_t PIT_FREQUENCY = get_pit_frequency();
     return (ms * PIT_FREQUENCY + 999) / 1000;
 }
 

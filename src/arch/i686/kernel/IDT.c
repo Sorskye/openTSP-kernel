@@ -1,12 +1,16 @@
 #include "types.h"
 #include "IDT.h"
 #include "GDT.h"
-#include "kerror.h"
+#include "debug.h"
 #include "io.h"
 #include "stdio.h"
 #include "task.h"
 #include "ps2_key.h"
 #include "ps2_mouse.h"
+#include "ufs.h"
+#include "syscall.h"
+#include "task.h"
+#include "lpcspeak.h"
 
 #include "serial.h"
 
@@ -45,6 +49,12 @@ extern void isr29();
 extern void isr30();
 extern void isr31();
 
+// syscall
+extern void isr128();
+
+// thread exit
+extern void isr129();
+
 extern void irq0();
 extern void irq1();
 extern void irq2();
@@ -65,16 +75,17 @@ extern void irq15();
 extern void irq60();
 extern void irq69();
 
-extern void loadIDT(IDT_POINTER *IDTPtr);
+
 
 int task_schedule_pending = 0;
 
-IDT_POINTER IDTPtr;
-IDT_ENTRY IDT[256];
+idt_pointer IDT_pointer;
+idt_entry IDT[256];
 void *IrqHandlers[256] = {0};
 
 
- volatile int in_interrupt = 0;
+volatile int in_interrupt = 0;
+volatile int inSyscall = -1;
 const char *current_irq_name = NULL;
 
 #define INTERRUPT_GATE 0x8E
@@ -88,20 +99,6 @@ void sti(){
     __asm__ __volatile__("sti");
 }
 
-
-void Exception_Handler(panic_registers *regs) // 0-31 CPU isr
-{
-    switch (regs->intNum)
-    {
-        
-    default:
-        serial_print("%d",regs->errCode);
-        panic("EXCEPTION",regs);
-        break;
-    }
-    
-}
-
 void send_eoi(uint8_t irq)
 {
 	if(irq >= 8)
@@ -111,23 +108,141 @@ void send_eoi(uint8_t irq)
     return;
 }
 
-void IRQ_common_Handler(panic_registers *regs) {
+
+void Exception_Handler(cpu_regs_with_int_code_t *regs) // 0-31 CPU isr
+{   
+    uint8_t ring = regs->cs & 0x3;
+    bool asSupervisor = (ring == 0);
+    bool asSyscall = (inSyscall > -1);
+
+
+    switch (regs->intNum)
+    {
+    case 0:
+        // divide by 0
+        if(asSupervisor){
+            KeBugCheck(7,0,regs); // division by zero
+        }else{
+            serial_print("USER DIVIDE BY ZERO\n");
+            speaker_error();
+            process_exit(current_process);
+            trigger_schedule();
+        }
+        break;
+    case 6:
+        if(asSupervisor){
+            KeBugCheck(9,0,regs); // invalid optcode
+        }else{
+            serial_print("USER INVALID OPTCODE\n");
+            speaker_error();
+            process_exit(current_process);
+            trigger_schedule();
+        }
+        break;
+    case 13:
+        // gpf
+        if(asSupervisor){
+            KeBugCheck(8,0,regs); // gpf
+        }else{
+            speaker_error();
+            serial_print("USER_GPF eip=0x%x err=0x%x\n", regs->eip, regs->errCode);
+            process_exit(current_process);
+            trigger_schedule();
+        }
+        break;
+    case 14:
+        if(asSupervisor && !asSyscall){
+            // kernel page fault
+            uint32_t virtAddress;
+            asm volatile("mov %%cr2, %0" : "=r"(virtAddress));
+            if (virtAddress < supervisor_vm_start){
+                KeBugCheck(0,"SUPERVISOR_PAGE_FAULT_IN_USER_REGION",regs);
+                break;
+            }
+            serial_print("SPV #PF: 0x%x task: %d\n", virtAddress, current_task->tid);
+            int attmpt = assignMissingPage(virtAddress, 0);
+            if(attmpt == -1){
+                KeBugCheck(10,0,regs);
+            }
+            serial_print("fixed SPV page fault\n");
+            break;
+        }else if(asSupervisor && asSyscall){
+            // kernel page fault in syscall context
+            KeBugCheck(10,0,regs);
+        }else{
+            // user page fault
+            uint32_t virtAddress;
+            asm volatile("mov %%cr2, %0" : "=r"(virtAddress));
+
+            // user in sprv area
+            if(virtAddress >= supervisor_vm_start){
+                serial_print("USER ACCESS VIOLATION : PROC TERMINATED\n");
+                speaker_error();
+                process_exit(current_process);
+                trigger_schedule();
+            }
+
+            if (regs->errCode & 1U) {
+                serial_print("USER PROTECTION FAULT: addr=0x%x eip=0x%x err=0x%x\n",
+                    virtAddress, regs->eip, regs->errCode);
+                process_exit(current_process);
+                trigger_schedule();
+            }
+
+            // userspace
+
+            vm_env_t* user_vm_env = current_process->vm_env;
+            int attmpt = assignMissingPage(virtAddress, user_vm_env);
+
+            if (attmpt == -1){
+                serial_print("UNFIXABLE USER PF : PROC TERMINATED\n");
+                speaker_error();
+                process_exit(current_process);
+                trigger_schedule();
+            }
+
+            break;
+
+            // try to alloc page 
+        }
+        break;
+    default:
+        KeBugCheck(1, 0, regs);
+        break;
+    }
     
-    current_irq_name = irqMessages[regs->errCode]; // errCode is IRQ number
-    
-    
+}
+
+void syscall_handler(cpu_regs_syscall* regs){
+    if(regs->eax != 1){
+        serial_print("SYS: %d\n",regs->eax);
+    }
+
+    uint32_t syscall = regs->eax;
+    inSyscall = (int)syscall;
+
+    int result = dispatchSyscall(syscall, &regs->eax, regs->ebx, regs->ecx, regs->edx, regs->esi, regs->edi, regs->ebp);
+    if (result != 0)
+        regs->eax = (uint32_t)result;
+    inSyscall = -1;
+    send_eoi(regs->errCode);
+}
+
+
+void IRQ_common_Handler(cpu_regs_with_int_code_t *regs) {
     switch (regs->errCode)
     {
     case 0:
         break;
     case 1:
-        keyboard_irq();
+        ps2keyboard_irq();
         break;
         
     case 12:
         mouse_irq_handler();
         break;
     default:
+    
         break;
     }
 
@@ -135,24 +250,27 @@ void IRQ_common_Handler(panic_registers *regs) {
 
 }
 
-
-
-
 #define IDT_SET_GATE(n, h) IDT_SET(n, (uint32_t)h, INTERRUPT_GATE)
 void IDT_SET(uint8_t number, uint32_t handler, uint8_t type)
 {
     IDT[number].offset_1 = handler & 0xFFFF;
-    IDT[number].selector = 0x08;
+    IDT[number].selector = KERNEL_CODE_SELECTOR;
     IDT[number].zero = 0;
     IDT[number].type = type;
     IDT[number].offset_2 = (handler >> 16) & 0xFFFF;
 }
 
-bool IDT_install(){
-    IDTPtr.limit = sizeof(IDT_ENTRY) * 256 - 1;
-    IDTPtr.base = (uint32_t)&IDT;
+void offsetIDTBase(uint32_t offset){
+    IDT_pointer.base = (uint32_t)&IDT + offset;
+    loadIDT(&IDT_pointer);
+    return;
+}
 
-    loadIDT(&IDTPtr);
+bool IDT_install(){
+    IDT_pointer.limit = sizeof(idt_entry) * 256 - 1;
+    IDT_pointer.base = (uint32_t)&IDT;
+
+    loadIDT(&IDT_pointer);
 
     IDT_SET_GATE(0, isr0);
     IDT_SET_GATE(1, isr1);
@@ -199,7 +317,7 @@ bool IDT_install(){
     outb(0x21, 0x0);
     outb(0xA1, 0x0);
 
-    IDT_SET_GATE(32, irq0);
+    IDT_SET(32, (uint32_t)irq0, 0xEE);
     IDT_SET_GATE(33, irq1);
     IDT_SET_GATE(34, irq2);
     IDT_SET_GATE(35, irq3);
@@ -218,6 +336,12 @@ bool IDT_install(){
 
     IDT_SET_GATE(60, irq60);
     IDT_SET_GATE(69, irq69);
+
+    // syscall gate, callable from ring 3
+    IDT_SET(0x80, (uint32_t)isr128, 0xEE);
+
+    // thread exit gate
+    IDT_SET(0x81, (uint32_t)isr129, 0xEF);
     
     asm volatile ("sti");
     return true;

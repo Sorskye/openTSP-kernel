@@ -79,20 +79,9 @@ void speaker_warning(){
 
 void speaker_error(){
     
-    speaker_beep(50);
-    sleep_ms(200);
+    speaker_beep(700);
+    sleep_ms(100);
     speaker_stop();
-    sleep_ms(200);
-
-    speaker_beep(50);
-    sleep_ms(200);
-    speaker_stop();
-
-    sleep_ms(200);
-    speaker_beep(50);
-    sleep_ms(200);
-    speaker_stop();
-    
 }
 
 void SpeakerBlip(){

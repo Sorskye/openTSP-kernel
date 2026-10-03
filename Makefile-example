@@ -1,11 +1,11 @@
 # === Project Configuration ===
-PROJECT_NAME := TBS-86
+PROJECT_NAME := openTSP-0.1.4
 TARGET       := i686-elf
 BUILD_DIR    := build
 ISO_DIR      := iso
 SRC_DIR      := src
 
-
+GRUBTHEME	:= grubtheme
 
 CC := $(TARGET)-gcc
 AS := nasm
@@ -14,8 +14,8 @@ OBJCOPY := $(TARGET)-objcopy
 NM := $(TARGET)-nm
 
 INCLUDES := -Isrc/include -Isrc/include/kernel -Isrc/include/lib -Isrc/arch/i686/include -Isrc/kernel/modules/include
-CFLAGS := -ffreestanding -O2 -Wall -Wextra -std=gnu99  $(INCLUDES)
-LDFLAGS := -T linker.ld -nostdlib
+CFLAGS := -ffreestanding -O2 -fno-omit-frame-pointer -Wall -Wextra -std=gnu99  $(INCLUDES)
+LDFLAGS := -T linker.ld -nostdlib -Map=kernel.map
 
 # === Source and Object Discovery ===
 C_SOURCES   := $(shell find $(SRC_DIR) -type f -name '*.c')
@@ -76,14 +76,23 @@ kernel.bin: kernel.elf
 $(PROJECT_NAME).iso: kernel.elf
 	@mkdir -p $(ISO_DIR)/boot/grub
 	cp kernel.elf $(ISO_DIR)/boot/kernel.elf
+	cp tmpfs.img $(ISO_DIR)/boot/tmpfs.img
 	echo 'set timeout=5' > $(ISO_DIR)/boot/grub/grub.cfg
 	echo 'set default=0' >> $(ISO_DIR)/boot/grub/grub.cfg
-	echo 'set terminal_output console' >> $(ISO_DIR)/boot/grub/grub.cfg
-	echo 'menuentry "$(PROJECT_NAME)" { multiboot /boot/kernel.elf }' >> $(ISO_DIR)/boot/grub/grub.cfg
-	echo 'menuentry "$(PROJECT_NAME) (VM compatibility)" { multiboot /boot/kernel.elf mode=vm}' >> $(ISO_DIR)/boot/grub/grub.cfg
-	echo 'menuentry "$(PROJECT_NAME) (safe mode)" { multiboot /boot/kernel.elf mode=safe }' >> $(ISO_DIR)/boot/grub/grub.cfg
-	echo 'menuentry "$(PROJECT_NAME) (safe mode, VM compatibility)" { multiboot /boot/kernel.elf mode=safe mode=vm }' >> $(ISO_DIR)/boot/grub/grub.cfg
-	echo 'menuentry "$(PROJECT_NAME) (debug mode)" { multiboot /boot/kernel.elf mode=debug level=3 }' >> $(ISO_DIR)/boot/grub/grub.cfg
+	
+	echo 'set gfxmode=1920x1080x32' >> $(ISO_DIR)/boot/grub/grub.cfg
+	# echo 'insmod all_video' >> $(ISO_DIR)/boot/grub/grub.cfg
+
+	
+	echo 'set gfxpayload=keep' >> $(ISO_DIR)/boot/grub/grub.cfg
+	echo 'terminal_output gfxterm' >> $(ISO_DIR)/boot/grub/grub.cfg
+
+	echo "menuentry \"openTSP (all_video)\" { \
+		multiboot /boot/kernel.elf; \
+		module /boot/tmpfs.img tmpfs; \
+		}" >> $(ISO_DIR)/boot/grub/grub.cfg
+
+
 	grub-mkrescue -o $@ $(ISO_DIR)
 
 # === Cleanup ===

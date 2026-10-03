@@ -1,11 +1,32 @@
 section .text
 global context_switch
-global scheduler_switch_now
+global user_task_enter
+global user_task_return
+global return_to_idle
 
 extern current_task
+extern idle_task
 extern scheduler_choose_next
 extern in_interrupt
 
+
+; user_task_enter: called the first time a user task is scheduled.
+; Stack at this point has the iret frame from create_ptask
+user_task_enter:
+    ; load user data selector into all data segment registers
+    mov ax, 0x23          ; USER_DATA_SELECTOR
+    mov ds, ax
+    mov es, ax
+    mov fs, ax
+    mov gs, ax
+    iret                  ; pops EIP, CS, EFLAGS, ESP, SS → ring 3
+
+user_task_return:
+    mov eax, 60           ; SYS_EXIT
+    int 0x80
+.return_halt:
+    hlt
+    jmp .return_halt
 
 ; void context_switch(uint32_t **old_sp_ptr, uint32_t *new_sp)
 context_switch:
@@ -18,20 +39,14 @@ context_switch:
     mov esp, edx
     popa
 
-    ret
-
-scheduler_switch_now:
-    cli
-    inc dword [in_interrupt]
-
-    mov eax, [current_task]
-    mov [eax], esp
-
-    call scheduler_choose_next
-
-    mov eax, [current_task]
-    mov esp, [eax]
-    
-    dec dword [in_interrupt]
     sti
     ret
+
+return_to_idle:
+    mov eax, [idle_task]
+    mov esp, [eax] ; stack offset is zero
+
+    popa
+    
+    sti
+    iret

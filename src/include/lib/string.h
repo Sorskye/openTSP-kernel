@@ -2,11 +2,19 @@
 #define STRING_H
 #include "types.h"
 
+void *memcpy(void *dst, const void *src, size_t n);
+void *memset(void *dst, int c, size_t n);
+void *memmove(void *dst, const void *src, size_t n);
+
 void strcpy(char *dest, const char *src);
+
 char* strncpy(char* dest, const char* src, size_t n);
 size_t strlen(char *str);
 char* strconcat(char *out, const char *fmt, ...);
 char* strrchr(const char* s, int c);
+char* itoa(int num, char* str, int base);
+int atoi(const char *str);
+long strtol(const char *nptr, char **endptr, int base);
 
 char* strstr(const char* haystack, const char* needle);
 char* strformat(const char *fmt, ...);

@@ -3,10 +3,14 @@
 #define KERNEL_H
 
 #include "types.h"
-#include "memory.h"
+#include "pmm.h" // for multiboot_info
+#include "boot.h"
 
 
-void kernel_main(uint32_t magic, struct multiboot_info* mbinfo);
+void kernel_main();
+void kernel_bootstrap(uint32_t magic, struct multiboot_info* mbinfo);
 extern struct inode* root_inode;
+
+
 
 #endif

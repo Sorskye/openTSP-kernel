@@ -6,14 +6,19 @@
 #include "task.h"
 #include "tty.h"
 #include "string.h"
+#include "ufs.h"
+#include "serial.h"
+#include "vmm.h"
+#include "syscall.h"
 // drivers
 
 
 
 void printf(const char *fmt, ...) {
-    char out[1024];
     
     size_t out_i = 0;
+    size_t out_size = 1024;
+    char out[out_size];
 
     va_list args;
     va_start(args, fmt);
@@ -60,18 +65,21 @@ void printf(const char *fmt, ...) {
                     if (is_ll)
                         out_i += hex64_to_str(va_arg(args, unsigned long long), out + out_i, width);
                     else
-                        out_i += hex32_to_str(va_arg(args, uint32_t), out + out_i, width);
+                        out_i += hex32_to_str(va_arg(args, unsigned int), out + out_i, width);
                     break;
                 }
 
                 case 's': {
-                    const char* s = va_arg(args, const char*);
-                    while (*s) out[out_i++] = *s++;
+                    const char *s = va_arg(args, const char *);
+                    if (!s) s = "(null)";
+                    while (*s && out_i < out_size - 1)
+                        out[out_i++] = *s++;
                     break;
                 }
 
                 case 'c': {
-                    out[out_i++] = (char)va_arg(args, int);
+                    if (out_i < out_size - 1)
+                         out[out_i++] = (char)va_arg(args, int);
                     break;
                 }
 
@@ -98,8 +106,76 @@ void printf(const char *fmt, ...) {
 
     if (current_task && current_task->tty) {
         tty_write_line(current_task->tty, out);
+        serial_print(out);
     }
 
     va_end(args);
 }
 
+int max(int a, int b) {
+    return (a > b) ? a : b;
+}
+
+int fopen(const char* path, size_t pathlen,char* flags){
+    return syscall_open(path, 0);
+}
+
+void fclose(int fd){
+    syscall_close(fd);
+}
+
+char* fread(int fd, size_t* out_size) {
+    if (out_size) *out_size = 0;
+
+    if (fd < 0){
+        serial_print("invalid FD given to fread\n");
+        return NULL;
+    }
+
+    int size = 10;// syscall_filesize(fd);
+    if (size < 0) {
+        serial_print("no file or file inode\n");
+        return NULL;
+    }
+
+    char* buffer = kzalloc((size_t)size + 1);
+    if (!buffer){
+        serial_print("no buffer\n");
+        return NULL;
+    }
+
+    size_t total = 0;
+    while (total < (size_t)size) {
+        int n = syscall_read(fd, buffer + total, (size_t)size - total);
+        if (n <= 0) break;
+        total += (size_t)n;
+    }
+
+    buffer[total] = '\0';
+
+    *out_size = total;
+    return buffer;
+}
+
+char* fgets(int fd, char* buf, size_t max_len) {
+    if (max_len == 0) return NULL;
+
+    size_t i = 0;
+
+    while (i < max_len - 1) {
+        char c;
+        //should be ssize_t
+        int n = syscall_read(fd, &c, 1);
+
+        if (n <= 0) break; // EOF
+
+        buf[i++] = c;
+
+        if (c == '\n') break;
+    }
+
+    if (i == 0) return NULL;
+
+    buf[i] = '\0';
+    return buf;
+}

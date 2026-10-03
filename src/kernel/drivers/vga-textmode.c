@@ -2,9 +2,10 @@
 #include "types.h"
 #include "vga-textmode.h"
 #include "io.h"
-#include "memory.h"
-#include "kerror.h"
+#include "vmm.h"
+#include "debug.h"
 #include "spinlock.h"
+#include "string.h"
 
 static volatile uint16_t* vga_buff_addr = (uint16_t*)0xB8000;
 
@@ -88,6 +89,7 @@ static inline void vga_load_default_palette() {
 void vga_init(){
     vga_framebuffer = alloc_framebuffer();
     
+    
     //vga_enable_blink();
   
    // vga_disable_blink();
@@ -114,7 +116,7 @@ void vga_set_cursor(uint16_t x, uint16_t y)
 
 void vga_putc(char c, int x, int y){
     const size_t index = y * GRID_WIDTH + x;
-    vga_framebuffer[index] = ((uint8_t)VGA_ENTRY_ATTR << 8) | (uint8_t)c;
+  //  vga_framebuffer[index] = ((uint8_t)VGA_ENTRY_ATTR << 8) | (uint8_t)c;
 }
 
 
