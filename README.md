@@ -224,4 +224,9 @@ Many operations return generic `-1` rather than consistent `errno` values; some 
 
 ## Project Status
 
+## Screenshots
+<img width="800" height="597" alt="ss" src="https://github.com/user-attachments/assets/f431262a-6cf7-4e44-9cae-33269ead124d" />
+
+
+
 This is an educational work in progress. The implementation is useful for exploring boot code, x86 descriptors/interrupts, basic paging, a timer-preempted task model, a RAMFS/VFS boundary, syscall entry, a minimal ELF loader, PS/2 input, and framebuffer drawing. Those pieces are not yet integrated with the validation, isolation, resource lifetime, compatibility, or test coverage required of a real operating system. Treat every interface as experimental and verify the active source and image contents before relying on any behavior.
