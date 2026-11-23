@@ -11,5 +11,6 @@ void serial_mark();
 
 void init_serial();
 
+extern bool DEBUG_TO_VIDEO;
 BOOT void serial_print_bs(const char *fmt, ...);
 #endif

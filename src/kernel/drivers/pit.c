@@ -4,20 +4,37 @@
 #define PIT_CMD 0x43
 #define PIT_CH0 0x40
 
-static uint32_t PIT_FREQUENCY = 100;
+static uint32_t PIT_FREQUENCY = 0;
+static uint32_t DEFAULT_PIT_FREQUENCY = 105;
 
 uint32_t get_pit_frequency(){
     return PIT_FREQUENCY;
 }
 
-void pit_init(uint32_t frequency) {
-    uint32_t divisor = 1193182 / frequency;
+void pit_set_freq(uint32_t frequency){
+
+}
+
+void pit_pause(){
+
+}
+
+void pit_unpause(){
+
+}
+
+void pit_step_once(){
+    
+}
+
+void pit_init(uint32_t freq) {
+    uint32_t divisor = 1193182 / freq;
 
     // set frequency
     outb(PIT_CMD, 0x34);
     outb(PIT_CH0, divisor & 0xFF);
     outb(PIT_CH0, (divisor >> 8) & 0xFF);
 
-    PIT_FREQUENCY = frequency;
+    PIT_FREQUENCY = freq;
 }
 

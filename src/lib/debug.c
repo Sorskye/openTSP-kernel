@@ -18,11 +18,11 @@
 
 static bool DEBUG_INIT = false;
 
-static uint32_t BugCheckCursorX = 1;
-static uint32_t BugCheckCursorY = 1;
+static uint32_t BugCheckCursorX = 0;
+static uint32_t BugCheckCursorY = 0;
 
-static uint32_t DebugCursorX = 1;
-static uint32_t DebugCursorY = 1;
+static uint32_t DebugCursorX = 0;
+static uint32_t DebugCursorY = 0;
 
 static struct framebuffer HardwareBuffer = {0};
 static struct image BugCheckImage = {0};
@@ -65,8 +65,6 @@ static struct color_rgba DebugBGColor = {
 };
 
 
-
-
 void init_debug(const char* font_path)
 {
     HardwareBuffer = get_framebuffer();
@@ -77,7 +75,6 @@ void init_debug(const char* font_path)
     FB_Pitch = HardwareBuffer.pitch;
 
    
-   
     BugCheckImage = image_wrap(HardwareBuffer.addr, FB_Width, FB_Height, FB_Pitch, &FB_FMT);
     DebugImage =  image_wrap(HardwareBuffer.addr, FB_Width, FB_Height, FB_Pitch, &FB_FMT);
     image_clear(&BugCheckImage, BugCheckBGColor);
@@ -85,10 +82,8 @@ void init_debug(const char* font_path)
 
     uint8_t psf_loaded = load_psf1_font(&Font, font_path);
 
-
     if (FB_Width <= 0 && FB_Height <= 0){
         serial_print("[!!!] failed to setup visual debugger: framebuffer too small (x%d y%d)\n",FB_Width, FB_Height);
-        
     }
 
     if(psf_loaded != 1){
@@ -97,7 +92,6 @@ void init_debug(const char* font_path)
     
     DEBUG_INIT = true;
 
-    serial_print("debug initialized");
     return;
 }
 
@@ -254,19 +248,65 @@ void BugCheckPrintf(const char *fmt, ...) {
     return;
 }
 
+static void debug_scroll_one_line(void)
+{
+    uint32_t scroll_height = Font.height;
+
+    if (scroll_height >= FB_Height) {
+        image_clear(&DebugImage, DebugBGColor);
+        return;
+    }
+
+    uint32_t clear_y = FB_Height - scroll_height;
+
+    memmove(DebugImage.addr,
+            (uint8_t *)DebugImage.addr + scroll_height * DebugImage.pitch,
+            (FB_Height - scroll_height) * DebugImage.pitch);
+
+    for (uint32_t y = clear_y; y < FB_Height; y++) {
+        for (uint32_t x = 0; x < FB_Width; x++) {
+            image_put_pixel(&DebugImage, x, y, DebugBGColor);
+        }
+    }
+}
+
+static void debug_advance_line(void)
+{
+    uint32_t rows = FB_Height / Font.height;
+
+    DebugCursorX = 0;
+    if (DebugCursorY + 1 < rows) {
+        DebugCursorY++;
+        return;
+    }
+
+    debug_scroll_one_line();
+    DebugCursorY = rows - 1;
+}
+
 void DebugPutChar(char c){
-    
-    if(!DEBUG_INIT){
+    if (!DEBUG_INIT || !DebugImage.addr || !Font.width || !Font.height ||
+        Font.height > FB_Height) {
+        return;
+    }
+
+    uint32_t columns = FB_Width / Font.width;
+    if (!columns || !FB_Height) {
         return;
     }
 
     if (c == '\n'){
-        DebugCursorX = 1;
-        DebugCursorY++;
-    }else{
-        draw_psf1_char(DebugImage, &Font, (DebugCursorX * Font.width), (DebugCursorY * Font.height), c, DebugFontColor);
-        DebugCursorX++;
+        debug_advance_line();
+        return;
     }
+
+    if (DebugCursorX >= columns) {
+        debug_advance_line();
+    }
+
+    draw_psf1_char(DebugImage, &Font, DebugCursorX * Font.width,
+                   DebugCursorY * Font.height, c, DebugFontColor);
+    DebugCursorX++;
 }
 
 

@@ -45,7 +45,7 @@ struct multiboot_info* MBinfo;
 
 // temp
 void no_sse(){
-    return;
+    KeBugCheck(0, "NON_SSE_PROCESSOR" ,0);
 }
 
 void kernel_bootstrap(uint32_t magic, struct multiboot_info* mbinfo){
@@ -61,14 +61,13 @@ void kernel_bootstrap(uint32_t magic, struct multiboot_info* mbinfo){
     MBmagic = magic;
     MBinfo = mbinfo;
 
-
     const char* cmdline = (const char*) mbinfo->cmdline;
     if (cmdline) {
         serial_print("bootloader commands: '%s'.\n", cmdline);
     }
 
     // hardware timer frequency
-    pit_init(2);
+    pit_init(90);
 
     pmm_init(mbinfo);
     serial_print("pmm initialized\n");
@@ -82,7 +81,6 @@ void kernel_bootstrap(uint32_t magic, struct multiboot_info* mbinfo){
 void kernel_main() {
     asm __volatile__("cli");
 
-    
 
 
     serial_print("executing in higher half\n");
@@ -122,6 +120,7 @@ void kernel_main() {
     
     // setup vfs
     vfs_init(root_inode);
+    serial_print("initializing debugger\n");
     init_debug("/sys/fonts/default8x16.psf");
 
     // syscall handlers
@@ -181,7 +180,10 @@ void kernel_main() {
    
     serial_print("start scheduling\n");
 
+    DEBUG_TO_VIDEO = false;
+    
     start_scheduling();
+    
 
 
     while (true)

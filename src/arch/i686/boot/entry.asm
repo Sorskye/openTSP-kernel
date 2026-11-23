@@ -4,22 +4,25 @@ align 4
 
 ; --- Constants ---
 MULTIBOOT_MAGIC     equ 0x1BADB002
-MULTIBOOT_FLAGS     equ (1 << 0) | (1 << 1) | (1 << 2)   ; add framebuffer flag
+MULTIBOOT_FLAGS     equ (1 << 0) | (1 << 1) | (1 << 2)
 MULTIBOOT_CHECKSUM  equ -(MULTIBOOT_MAGIC + MULTIBOOT_FLAGS)
-
-; Framebuffer settings
-FB_WIDTH  equ 1920
-FB_HEIGHT equ 1080
-FB_DEPTH  equ 32
 KERNEL_PDE_INDEX equ (0xC0000000 >> 22)
 
+%ifndef FB_WIDTH
+%define FB_WIDTH 1920
+%endif
+%ifndef FB_HEIGHT
+%define FB_HEIGHT 1080
+%endif
+%ifndef FB_DEPTH
+%define FB_DEPTH 32
+%endif
 
 ; header
 dd MULTIBOOT_MAGIC
 dd MULTIBOOT_FLAGS
 dd MULTIBOOT_CHECKSUM
-
-; framebuffer request
+dd 0
 dd FB_WIDTH
 dd FB_HEIGHT
 dd FB_DEPTH

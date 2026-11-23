@@ -7,7 +7,7 @@
 #include "main.h"
 
 
-static bool DEBUG_TO_VIDEO = false;
+bool DEBUG_TO_VIDEO = true;
 static uint8_t serial_count = 0;
 
 
@@ -18,10 +18,11 @@ static int serial_ready() {
 void serial_write(char c){
     while (!serial_ready());
     outb(0x3F8,c);
-    if(!DEBUG_TO_VIDEO){
-        return;
+    
+    if(DEBUG_TO_VIDEO){
+        DebugPutChar(c);
     }
-    DebugPutChar(c);
+    
 }
 
 void serial_mark(){

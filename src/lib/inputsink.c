@@ -200,10 +200,20 @@ void handle_key_event(struct key_event *ev) {
     }else if(ev->code == KEY_2 && ev->pressed){
         if(state.ralt){
             uint32_t freq = get_pit_frequency();
+            if(freq <= 16){return;}
             pit_init(freq-=5);
             serial_print("pit frequency: %d hz\n",get_pit_frequency());
-            printf("TEST");
             return;
+        }
+    }else if(ev->code == KEY_0 && ev->pressed){
+        if(state.ralt){
+            pit_init(16);
+            serial_print("pit frequency: %d hz\n",get_pit_frequency());
+        }
+    }else if(ev->code == KEY_r && ev->pressed){
+        if(state.ralt){
+            pit_init(105);
+            serial_print("pit frequency: %d hz\n",get_pit_frequency());
         }
     }
 
